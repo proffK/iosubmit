@@ -103,6 +103,13 @@ static void display_usage() {
         puts(help_msg);
 }
 
+static void update_iocbs(struct iocb** iocbsp) {
+        int i;
+        for (i = 0; i < global_args.iocbs_num; i++) {
+                iocbsp[i]->u.v.offset += global_args.total;
+        }
+}
+
 int main(int argc, char* argv[]) {
         int i, ret = 0;
         struct iocb** iocbsp;
@@ -180,7 +187,7 @@ int main(int argc, char* argv[]) {
         if (fd == -EEXIST) {
                 fd = open(global_args.testfile, O_DIRECT | O_RDWR | O_DSYNC );
         } else {
-                fallocate(fd, 0, 0, global_args.total);
+                fallocate(fd, 0, 0, global_args.total * global_args.times);
         }
 
         iocbsp = (struct iocb**) malloc (global_args.iocbs_num * sizeof(struct iocb*));
@@ -221,12 +228,6 @@ int main(int argc, char* argv[]) {
                 end = rdtsc();
 
                 if (ret < 0) {
-                        /*
-                        if (ret == -EAGAIN) {
-                                times++;
-                                continue;
-                        }
-                        */
                         fprintf(stderr, "submit error!\n");
                         break;
                 }
@@ -242,6 +243,10 @@ int main(int argc, char* argv[]) {
 
                 if (global_args.verbose == 1) {
                         fprintf(stderr, "Submit reaped\n", end - start);
+                }
+
+                if (global_args.rewrite == 0) {
+                        update_iocbs(iocbsp);
                 }
         }
 
