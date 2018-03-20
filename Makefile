@@ -1,2 +1,7 @@
-all: iosubmit.c
-	gcc -o iosubmit iosubmit.c -laio -O3 -g
+all: iosubmit Makefile
+
+iosubmit: iosubmit.c
+	gcc -o $@ $^ -laio -O2
+
+debug: iosubmit.c
+	gcc -o iosubmit $^ -laio -g
