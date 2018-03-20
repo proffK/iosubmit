@@ -91,7 +91,7 @@ void build_hist(uint64_t* results, FILE* hist, int len) {
         }
 
         for (i = 0; i < HIST_SIZE; i++) {
-                fprintf(hist, "%ld, %ld\n", i * HIST_STEP, hist_results[i]);
+                fprintf(hist, "%d, %ld\n", i * HIST_STEP, hist_results[i]);
         }
 }
 
@@ -114,7 +114,7 @@ int main(int argc, char* argv[]) {
         int i, ret = 0;
         struct iocb** iocbsp;
         int fd;
-        FILE* hist;
+        FILE* hist = NULL;
         io_context_t ctx;
         struct io_event e;
         uint64_t* results;
@@ -192,6 +192,11 @@ int main(int argc, char* argv[]) {
 
         iocbsp = (struct iocb**) malloc (global_args.iocbs_num * sizeof(struct iocb*));
 
+        if (iocbsp == NULL) {
+                ret = -1;
+                goto end1;
+        }
+
         for (i = 0; i < global_args.iocbs_num; i++) {
                 struct iovec* vecs;
                 int j;
@@ -250,9 +255,13 @@ int main(int argc, char* argv[]) {
                 }
         }
 
-        if (hist != 0) {
+        if (hist != NULL) {
                 build_hist(results, hist, global_args.times);
         }
         
         io_destroy(ctx);
+        free(results);
+end1:
+        close(fd);
+        return ret;
 }
