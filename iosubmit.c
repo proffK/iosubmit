@@ -1,3 +1,7 @@
+/*
+ * Author: Klim Kireev <klim.kireev@virtuozzo.com
+ */
+
 #define _GNU_SOURCE
 #include <libaio.h>
 
@@ -31,6 +35,8 @@ struct global_args_t {
         size_t iocbs_num;
         int verbose;
         int rewrite;
+        int blockdev;
+        int isread;
         char filler;
  } global_args;
 
@@ -71,6 +77,8 @@ static const struct option longOpts[] = {
     { "rewrite", no_argument, NULL, 'r' },
     { "verbose", no_argument, NULL, 'v' },
     { "help", no_argument, NULL, 'h' },
+    { "blockdev", no_argument, NULL, 'd' },
+    { "read", no_argument, NULL, 'R' },
     { NULL, no_argument, NULL, 0 }
 };
 
@@ -130,6 +138,8 @@ int main(int argc, char* argv[]) {
         global_args.iocbs_num = 0;
         global_args.verbose = 0;
         global_args.rewrite = 0;
+        global_args.blockdev = 0;
+        global_args.isread = 0;
        
         opt = getopt_long(argc, argv, optString, longOpts, &longind);
         while (opt != -1) {
@@ -164,6 +174,12 @@ int main(int argc, char* argv[]) {
                         case 'F':
                                 global_args.filler = optarg[0];
                                 break;
+                        case 'R':
+                                global_args.isread = 1;
+                                break;
+                        case 'd':
+                                global_args.blockdev = 1;
+                                break;
                         case 'H':
                                 global_args.histfile = optarg;
                                 break;
@@ -183,14 +199,33 @@ int main(int argc, char* argv[]) {
                 exit(EXIT_FAILURE);
         }
 
-        fd = open(global_args.testfile, O_DIRECT | O_ASYNC | O_RDWR | O_CREAT, S_IRWXU);
-        if (fd == -EEXIST) {
-                fd = open(global_args.testfile, O_DIRECT | O_RDWR | O_DSYNC );
+        if (global_args.blockdev == 0) {
+                fd = open(global_args.testfile, O_DIRECT | O_RDWR | O_CREAT, S_IRWXU);
+                if (fd < 0) {
+                        if (fd == -EEXIST) {
+                                fd = open(global_args.testfile, O_DIRECT | O_RDWR );
+                        } else {
+                                errno = -fd;
+                                perror("");
+                                fprintf(stderr, "Can't open file %s\n", global_args.testfile);
+                                ret = -1;
+                                goto end1;
+                        }
+                } else {
+                        fallocate(fd, 0, 0, global_args.total * global_args.times);
+                }
         } else {
-                fallocate(fd, 0, 0, global_args.total * global_args.times);
+                fd = open(global_args.testfile, O_DIRECT | O_RDWR);
+                if (fd < 0) {
+                        errno = -fd;
+                        perror("");
+                        fprintf(stderr, "Can't open block device %s\n", global_args.testfile);
+                        ret = -1;
+                        goto end1;
+                }
         }
 
-        iocbsp = (struct iocb**) malloc (global_args.iocbs_num * sizeof(struct iocb*));
+        iocbsp = (struct iocb**) calloc (global_args.iocbs_num, sizeof(struct iocb*));
 
         if (iocbsp == NULL) {
                 ret = -1;
@@ -204,9 +239,16 @@ int main(int argc, char* argv[]) {
                 vecs = (struct iovec*) malloc (global_args.vec_num * sizeof(struct iovec));
                 for (j = 0; j < global_args.vec_num; j++) {
                         posix_memalign(&(vecs[j].iov_base), 4096, global_args.bs);
+                        if (global_args.filler != 0) {
+                                memset(vecs[j].iov_base, global_args.filler, global_args.bs);
+                        }
                         vecs[j].iov_len = global_args.bs;
                 }
-                io_prep_pwritev(iocbsp[i], fd, vecs, global_args.vec_num, i * (global_args.total / global_args.iocbs_num));
+                if (global_args.isread == 1) {
+                        io_prep_preadv(iocbsp[i], fd, vecs, global_args.vec_num, i * (global_args.total / global_args.iocbs_num));
+                } else {
+                        io_prep_pwritev(iocbsp[i], fd, vecs, global_args.vec_num, i * (global_args.total / global_args.iocbs_num));
+                }
         }
 
         memset(&ctx, 0, sizeof(ctx));
@@ -225,7 +267,7 @@ int main(int argc, char* argv[]) {
                 unsigned long end;
 
                 if (global_args.verbose == 1) {
-                        fprintf(stderr, "Submit starts\n", end - start);
+                        fprintf(stdout, "Submit starts\n", end - start);
                 }
 
                 start = rdtsc();
@@ -233,13 +275,15 @@ int main(int argc, char* argv[]) {
                 end = rdtsc();
 
                 if (ret < 0) {
-                        fprintf(stderr, "submit error!\n");
-                        break;
+                        errno = -ret;
+                        perror("");
+                        fprintf(stderr, "Submit error!\n");
+                        goto free_end;
                 }
 
                 results[i] = end - start;
                 if (global_args.verbose == 1) {
-                        fprintf(stderr, "Submit time = %lu\n", end - start);
+                        fprintf(stdout, "Submit time = %lu\n", end - start);
                 }
 
                 while(count--) {
@@ -247,7 +291,7 @@ int main(int argc, char* argv[]) {
                 }
 
                 if (global_args.verbose == 1) {
-                        fprintf(stderr, "Submit reaped\n", end - start);
+                        fprintf(stdout, "Submit reaped\n", end - start);
                 }
 
                 if (global_args.rewrite == 0) {
@@ -260,7 +304,25 @@ int main(int argc, char* argv[]) {
         }
         
         io_destroy(ctx);
+        ret = 0;
+
+free_end:
         free(results);
+        for (i = 0; i < global_args.iocbs_num; i++) {
+                int j;
+                if (iocbsp[i] != NULL) {
+                        if (iocbsp[i]->u.v.vec != NULL) {
+                                for (j = 0; j < global_args.vec_num; j++) {
+                                        if (iocbsp[i]->u.v.vec[j].iov_base != NULL) {
+                                                free(iocbsp[i]->u.v.vec[j].iov_base);
+                                        }
+                                }
+                                free(iocbsp[i]->u.v.vec);
+                        }
+                }
+                free(iocbsp[i]);
+        }
+        free(iocbsp);
 end1:
         close(fd);
         return ret;
